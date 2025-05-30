@@ -1,0 +1,168 @@
+---
+title: "2024 CABI PK/PD Data Analysis Exercise Part.1 - Dealing Real World Data and Basic Data Visualization"
+author: "Jin Gyu Kim"
+date: ""
+output: 
+  html_document:
+    css: docs/src/styles/styles.css
+    toc: true
+    number_sections: true
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(comment='.', echo = TRUE, warning = FALSE)
+rm(list=ls())
+```
+
+Welcome to PK/PD data analysis exercise template, here we want to demonstrate how coding helps our analysis. 
+Feel free to ask any questions or if you are having trouble running this script
+
+# Install Rtools 
+If Windows, click [here](https://cran.r-project.org/bin/windows/Rtools/) and download RTools with your R version. Check the console R version, it could be either 4.4.0, or 4.3.X
+
+If mac, click [here](https://mac.r-project.org/tools/) and download GNU Fortran compiler to run this script on mac
+
+# Load Packages
+Here we want to import our installed package into our R environment
+```{r echo=TRUE}
+library(renv)
+library(tidyverse)
+library(ggplot2)
+library(nlmixr2)
+library(xpose.nlmixr2)
+library(rxode2)
+library(mrgsolve)
+```
+
+
+# How we roll in the Data Science world 
+## Data import and basic checks   
+```{r pressure, echo=TRUE}
+# Import data
+ideal_dataset <- read.csv("./dataset/ideal_world.csv")
+
+# View dataset
+head(ideal_dataset, 15)
+
+# Check the names of the columns
+names(ideal_dataset)
+
+# Number of rows in the dataset
+nrow(ideal_dataset)
+
+# Number of columns in the dataset
+ncol(ideal_dataset)
+
+# Number of missing values in the dataset
+sum(is.na(ideal_dataset))
+```
+
+## Hands-on Exercise 1: Plot a PK conc-time curve  
+```{r}
+# Plot conc vs time profile for 100 individuals in the same axis 
+ggplot(ideal_dataset, aes(x = time, y = DV, group = ID, color = factor(ID))) +
+  geom_line() +
+  theme_linedraw() +
+  theme(legend.position = 'none') +
+  scale_y_log10()  +
+  labs(x = 'Time (hours)', y = 'Conc (mg/L)', title = 'Spaghetti Plot: 100 individuals conc vs time')
+
+# Plot conc vs time profile for each
+ggplot(data = ideal_dataset[ideal_dataset$ID %in% c(1:12), ], aes(x = time, y = log(DV), color = factor(ID))) +
+  geom_line() +
+  theme_bw() +
+  theme(legend.position = 'none') +
+  facet_wrap(~ID) +
+  labs(x = 'Time (hours)', y = 'Conc (mg/L)', title = 'Spaghetti Plot: 12 individuals conc vs time')
+
+```
+
+## Ideal vs Real World
+The dataset we load were from the ideal world, which we have collected data at every hour and all data were collected in perfect manner. However, in real world, that is not likely to happen. 
+
+Nobody wants to get pricked every hour **(Imagine you were getting pricked every hour even when you are sleeping!)**
+
+We will usually get data points much less than that, and less data points means less chances of describing the observations with the single mathematical equations. 
+What makes it worse, some patients might have drank coffee at that day and impacted the sample concentration, there were less/no data evident to describe the patient characteristics (liver size impacting the drug), or some of the samples may have evaporated before the assay that led to a disagreement with the PK equations. 
+
+The point is, **we cannot anticipate all factors that have impacted our observations and capture all in the mathematical equation**. 
+
+That is why we incorporate **random effects** into our analysis to compensate the data points that cannot be explained with the equations.
+```{r}
+# Read real world dataset
+real_world_dataset <- read.csv("./dataset/analyzing_dataset.csv")
+
+# Compare ideal vs real world dataset
+ggplot() +
+  geom_line(data = ideal_dataset[ideal_dataset$ID %in% c(1:12), ], aes(x = time, y = log(DV), group = factor(ID)), color = 'blue') +
+  geom_line(data = real_world_dataset[real_world_dataset$ID %in% c(1:12), ], aes(x = TIME, y = DV, group = factor(ID)), color = 'red') +
+  geom_point() +
+  theme_bw() +
+  theme(legend.position = 'none') +
+  #facet_wrap(~ID) +
+  labs(x = 'Time (hours)', y = 'Conc (mg/L)', title = 'Ideal (blue) vs Real (red)')
+
+# Compare ideal vs real world dataset
+ggplot() +
+  geom_line(data = ideal_dataset[ideal_dataset$ID %in% c(1:12), ], aes(x = time, y = log(DV), group = factor(ID)), color = 'blue') +
+  geom_line(data = real_world_dataset[real_world_dataset$ID %in% c(1:12), ], aes(x = TIME, y = DV, group = factor(ID)), color = 'red') +
+  geom_point() +
+  theme_bw() +
+  theme(legend.position = 'none') +
+  facet_wrap(~ID) +
+  labs(x = 'Time (hours)', y = 'Conc (mg/L)', title = 'Ideal (blue) vs Real (red)')
+```
+
+### Solution
+Here, we introduce biomarker 'RESP' in the plot. You can see the biomarker concentration not always have direct relationship with the concentration of the drug. (Also, patient baseline factor kicks in too) See ID = 2, and ID = 6 PK/PD
+```{r}
+# PK
+# Real World: conc vs TIME plot for 100 individuals in the same axis 
+ggplot(data = real_world_dataset, aes(x = TIME, y = DV, color = factor(ID))) +
+  geom_line() +
+  theme_bw() +
+  theme(legend.position = 'none') +
+  labs(x = 'Time (hours)', y = 'Conc (mg/L)', title = 'PK Spaghetti Plot: Real world dataset')
+
+# Real World: conc vs TIME plot for 100 individuals in the same axis 
+ggplot(data = real_world_dataset[real_world_dataset$ID %in% c(1:12), ], aes(x = TIME, y = DV, color = factor(ID))) +
+  geom_line() +
+  geom_point() +
+  theme_bw() +
+  theme(legend.position = 'none') +
+  facet_wrap(~ID) +
+  labs(x = 'Time (hours)', y = 'Conc (mg/L)', title = 'PK Spaghetti Plot: Real world dataset')
+
+# PD
+# Real World: conc vs TIME plot for 100 individuals in the same axis 
+ggplot(data = real_world_dataset, aes(x = TIME, y = RESP, color = factor(ID))) +
+  geom_line() +
+  theme_bw() +
+  theme(legend.position = 'none') +
+  labs(x = 'Time (hours)', y = 'Conc (mg/L)', title = 'PD Spaghetti Plot: Real world dataset')
+
+# Real World: conc vs TIME plot for 100 individuals in the same axis 
+ggplot(data = real_world_dataset[real_world_dataset$ID %in% c(1:12), ], aes(x = TIME, y = RESP, color = factor(ID))) +
+  geom_line() +
+  geom_point() +
+  theme_bw() +
+  theme(legend.position = 'none') +
+  facet_wrap(~ID) +
+  labs(x = 'Time (hours)', y = 'Conc (mg/L)', title = 'PD Spaghetti Plot: Real world dataset')
+```
+
+From now on, we will use real_world_dataset in our future exercises.
+
+## Challenge: Create a PK/PD plot on the same axis from the real_world_dataset. 
+```{r}
+# Hint: refer to line 101 :)
+
+```
+
+# Take home points
+Visualization is a powerful tool to interpret the data and aid in decision making for data scientists.
+
+There are always uncertainties in the data collected so we do our best to deal with this in data analysis.
+
+It is important to define the PK/PD relationship in drug discovery to have confidence in the drug 
+
+    If you have any questions, don't hesitate to ask us!

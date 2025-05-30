@@ -1,0 +1,418 @@
+---
+title: "2024 CABI PK/PD Data Analysis Exercise Part.2 - Identifying patient characteristics driving drug disposition (PK) - Covariate building step"
+author: "Jin Gyu Kim"
+date: ""
+output: 
+  html_document:
+    css: docs/src/styles/styles.css
+    toc: true
+    number_sections: true
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(comment='.', echo = TRUE, warning = FALSE)
+rm(list=ls())
+```
+
+Welcome to PK/PD data analysis exercise template, here we want to demonstrate how coding helps our analysis. 
+Feel free to ask any questions or if you are having trouble running this script
+
+# Install packages 
+If Windows, click [here](https://cran.r-project.org/bin/windows/Rtools/) and download RTools with your R version. Check the console R version, it could be either 4.4.0, or 4.3.X
+
+If mac, click [here](https://mac.r-project.org/tools/) and download GNU Fortran compiler to run this script on mac
+
+# Load Packages
+Here we will import our installed packages into our R environment
+```{r echo=TRUE}
+library(renv)
+library(tidyverse)
+library(ggplot2)
+library(nlmixr2)
+library(xpose4)
+library(xpose.nlmixr2)
+library(rxode2)
+```
+
+# Build base PK model
+```{r}
+real_world_dataset <- read.csv("./dataset/analyzing_dataset.csv")
+
+base_model <- function() {
+  ini({
+    ## Theta - Initial estimates
+    tvka  <- log(0.479)
+    tvcl  <- log(12.1)
+    tvvc  <- log(67.9)
+    tvvp  <- log(515)  
+    tvq   <- log(25)
+    #covWTVC  <- 0.75
+    #covAgeCL <- 0.75
+    ## Omega  - Initial estimates 
+    eta.cl ~ 0.1
+    eta.vc ~ 0.1
+    eta.vp ~ 0.1
+    eta.q  ~ 0.1
+    ## Sigma - Initial estimates
+    log.err <- 0.111 
+    #add.err  <- 0.024   
+  })
+  model({
+    ka <- exp(tvka)
+    cl <- exp(tvcl + eta.cl)
+    vc <- exp(tvvc + eta.vc)
+    vp <- exp(tvvp + eta.vp)
+    q  <- exp(tvq + eta.q)
+    sex <- GENDER 
+    baseline <- MIC_C1D4
+    pk_obs <- RESP
+    
+    k20 <- cl/vc
+    k23 <- q/vc
+    k32 <- q/vp
+    
+    d/dt(absorption) = - ka * absorption
+    d/dt(central)    = ka * absorption - k20 * central - k23 * central + k32 * peripheral        # model differential equation
+    d/dt(peripheral) = k23 * central - k32 * peripheral 
+    
+    DV = log(central / vc)       # concentration in plasma
+    DV ~ add(log.err)            # define error model
+  })
+}
+
+# We incorporate the model with the dataset to obtain pharmacokinetic parameters
+base_pk_fit <- nlmixr2(base_model, 
+               real_world_dataset, 
+               "focei",
+              control=list(print=1), 
+              table=list(cwres=TRUE, npde=TRUE)
+              )
+```
+
+```{r}
+# Output
+base_pk_fit
+
+# We will convert 
+xpdb_pk <- xpose_data_nlmixr2(base_pk_fit,
+                           xp_theme = theme_xp_nlmixr2())
+
+# individual prediction vs individual
+pred_vs_idv(xpdb_pk, group="ID")
+
+# individual plots 
+ind_plots(xpdb_pk)
+
+# observation vs individual prediction plot
+dv_vs_pred(xpdb_pk, type="ps")
+
+# residual error vs population prediction plot
+res_vs_pred(xpdb_pk, res="CWRES", type="ps")
+
+# residual error vs individual plot
+res_vs_idv(xpdb_pk, res="CWRES", type="ps")
+```
+
+
+
+# Load dataset and initial screen
+```{r, echo = TRUE}
+# Import our analyzing dataset with demographic data
+dataset <- real_world_dataset %>% mutate(GENDER = ifelse(GENDER == 1, 'Male', 'Female'))
+
+# Spaghetti plot for all patients
+ggplot(dataset, aes(x = TIME, y = DV, color = factor(ID))) +
+  geom_line() + 
+  theme_bw() +
+  #scale_y_log10() +
+  theme(legend.position = 'none') +
+  labs(title = "Spaghetti Plot: Conc vs Time curve from 100 individuals", x = "Time (hr)", y = "Conc (mg/L)")
+
+# Spaghetti plot for all patients
+ggplot(dataset[dataset$ID %in% c(1:12), ], aes(x = TIME, y = DV, color = factor(ID))) +
+  geom_line() + 
+  geom_point() +
+  theme_bw() +
+  #scale_y_log10() +
+  facet_wrap(~ID) +
+  theme(legend.position = 'none') +
+  labs(title = "Spaghetti Plot: Conc vs Time curve from 100 individuals", x = "Time (hr)", y = "Conc (mg/L)")
+
+# Since we have multiple observations from every patients, we will filter only one row per patient
+dataset_ID_unique <- dataset[!duplicated(dataset$ID), ]
+base_pk_param <- base_pk_fit[!duplicated(base_pk_fit$ID), ]
+
+pk_covariate_exploration <- merge(dataset_ID_unique, base_pk_param, by = 'ID')
+
+# Summary of patient demographics
+summary(dataset_ID_unique)
+```
+
+# BSV Exploration: Gender 
+```{r, echo = TRUE, warning = FALSE}
+ggplot(dataset_ID_unique, aes(x = GENDER, fill = GENDER)) +
+  geom_bar() +
+  theme_bw() +
+  labs(title = "Distribution of Gender")
+
+# One plot
+ggplot(dataset, aes(x = TIME, y = DV, group = ID, color = GENDER)) +
+  geom_line() + 
+  #geom_point() +
+  theme_bw() +
+  scale_y_log10() +
+  labs(title = "Spaghetti Plot: Stratified by Gender", x = "Time (hr)", y = "Conc (mg/L)")
+  #theme(legend.position = 'none') 
+
+# Facet
+ggplot(dataset, aes(x = TIME, y = DV, group = ID, color = GENDER)) +
+  geom_line() + 
+  #geom_point() +
+  theme_bw() +
+  scale_y_log10() +
+  facet_wrap(~GENDER) +
+  theme(legend.position = 'none') +
+  labs(title = "Spaghetti Plot: Stratified by Gender", x = "Time (hr)", y = "Conc (mg/L)")
+
+# Exploring gender factor in individual PK component. 
+ggplot(pk_covariate_exploration, aes(x = GENDER.x, y = eta.cl)) +
+  geom_boxplot() +
+  theme_bw() +
+  labs(x = 'Gender', y = 'Individual Clearance (CL)')
+
+ggplot(pk_covariate_exploration, aes(x = GENDER.x, y = eta.vc)) +
+  geom_boxplot() +
+  theme_bw() +
+  labs(x = 'Gender', y = 'Individual Central Volume (VC)')
+
+ggplot(pk_covariate_exploration, aes(x = GENDER.x, y = eta.vp)) +
+  geom_boxplot() +
+  theme_bw() +
+  labs(x = 'Gender', y = 'Individual Peripheral Volume (VP)')
+
+ggplot(pk_covariate_exploration, aes(x = GENDER.x, y = eta.q)) +
+  geom_boxplot() +
+  theme_bw() +
+  labs(x = 'Gender', y = 'Individual Intercompartmental Clearance (Q)')
+```
+
+## BSV Exploration: Age
+```{r, echo = TRUE, warning = FALSE}
+
+ggplot(dataset_ID_unique, aes(x = Age)) +
+  geom_histogram(color = 'white',
+                 bins = 10,
+                 center = 4) +
+  theme_bw() +
+  theme(legend.position = 'none') +
+  labs(title = "Distribution of Age", x = 'Age (yr)')
+
+# One plot
+ggplot(dataset, aes(x = TIME, y = DV, group = ID, color = Age > 30)) +
+  geom_line() + 
+  #geom_point() +
+  theme_bw() +
+  scale_y_log10() +
+  labs(title = "Spaghetti Plot: Stratified by Age", x = "Time (hr)", y = "Conc (mg/L)")
+  #theme(legend.position = 'none') 
+
+# Facet
+ggplot(dataset, aes(x = TIME, y = DV, group = ID, color =  Age > 30)) +
+  geom_line() + 
+  #geom_point() +
+  theme_bw() +
+  scale_y_log10() +
+  facet_wrap(~ Age > 30) +
+  labs(title = "Spaghetti Plot: Stratified by Age", x = "Time (hr)", y = "Conc (mg/L)")
+  #theme(legend.position = 'none') 
+
+# Exploring age factor in individual PK component. 
+# Evident that Age factor relates to individual Cl. Strengthening hypothesis from the prelim study 
+ggplot(pk_covariate_exploration, aes(x = Age, y = eta.cl)) +
+  geom_point() +
+  geom_smooth() +
+  theme_bw() +
+  labs(x = 'Age', y = 'Individual Clearance (CL)')
+
+ggplot(pk_covariate_exploration, aes(x = Age, y = eta.vc)) +
+  geom_point() +
+  geom_smooth() +
+  theme_bw() +
+  labs(x = 'Age', y = 'Individual Central Volume (VC)')
+
+ggplot(pk_covariate_exploration, aes(x = Age, y = eta.vp)) +
+  geom_point() +
+  geom_smooth() +
+  theme_bw() +
+  labs(x = 'Age', y = 'Individual Peripheral Volume (VP)')
+
+ggplot(pk_covariate_exploration, aes(x = Age, y = eta.q)) +
+  geom_point() +
+  geom_smooth() +
+  theme_bw() +
+  labs(x = 'Age', y = 'Individual Intercompartmental Clearance (Q)')
+```
+
+## BSV Exploration: Weight
+```{r, echo = TRUE, warning = FALSE}
+
+# Take a look at Age.yr, Weight, and BMI but this isn't enough to understand the population characteristics
+ggplot(dataset_ID_unique, aes(x = WT)) +
+  geom_histogram(color = 'white',
+                 bins = 20,
+                 center = 4) +
+  theme_bw() +
+  theme(legend.position = 'none') +
+  labs(title = "Distribution of Weight", x = "Weight (kg)")
+
+# One plot
+ggplot(dataset, aes(x = TIME, y = DV, group = ID, color = WT < 60)) +
+  geom_line() + 
+  #geom_point() +
+  theme_bw() +
+  scale_y_log10() +
+  labs(title = "Spaghetti Plot: Stratified by Weight", x = "Time (hr)", y = "Conc (mg/L)")
+
+# Facet
+ggplot(dataset, aes(x = TIME, y = DV, group = ID, color = WT < 60)) +
+  geom_line() + 
+  #geom_point() +
+  theme_bw() +
+  scale_y_log10() +
+  facet_wrap(~WT < 60) +
+  labs(title = "Spaghetti Plot: Stratified by Weight", x = "Time (hr)", y = "Conc (mg/L)")
+
+# Exploring weight factor in individual PK component.
+ggplot(pk_covariate_exploration, aes(x = WT, y = eta.cl)) +
+  geom_point() +
+  geom_smooth() +
+  theme_bw() +
+  labs(x = 'Weight', y = 'Individual Clearance (CL)')
+
+# Evident that WT factor relates to individual VC. Strengthening hypothesis from the prelim study 
+ggplot(pk_covariate_exploration, aes(x = WT, y = eta.vc)) +
+  geom_point() +
+  geom_smooth() +
+  theme_bw() +
+  labs(x = 'Weight', y = 'Individual Central Volume (VC)')
+
+ggplot(pk_covariate_exploration, aes(x = WT, y = eta.vp)) +
+  geom_point() +
+  geom_smooth() +
+  theme_bw() +
+  labs(x = 'Weight', y = 'Individual Peripheral Volume (VP)')
+
+ggplot(pk_covariate_exploration, aes(x = WT, y = eta.q)) +
+  geom_point() +
+  geom_smooth() +
+  theme_bw() +
+  labs(x = 'Weight', y = 'Individual Intercompartmental Clearance (Q)')
+
+```
+
+#PK model incorporating patient characteristics
+```{r}
+# Age in Clearance and WT in Volume
+covariate_model <- function() {
+  ini({
+    ## Theta - Initial estimates
+    tvka  <- log(0.479)
+    tvcl  <- log(12.1)
+    tvvc  <- log(67.9)
+    tvvp  <- log(515)  
+    tvq   <- log(25)
+    covWTVC  <- 0.75
+    covAgeCL <- 0.75
+    ## Omega  - Initial estimates 
+    #eta.ka ~ 0.1
+    eta.cl ~ 0.1
+    eta.vc ~ 0.1
+    eta.vp ~ 0.1
+    eta.q  ~ 0.1
+    ## Sigma - Initial estimates
+    log.err <- 0.111 
+    #add.err  <- 0.024   
+  })
+  model({
+    ka <- exp(tvka)
+    cl <- exp(tvcl + eta.cl) * (Age/30)^covAgeCL   # individual value of clearance
+    vc <- exp(tvvc + eta.vc) * (WT/70)^covWTVC    # individual value of VC
+    vp <- exp(tvvp + eta.vp)
+    q  <- exp(tvq + eta.q)
+    sex <- GENDER 
+    baseline <- MIC_C1D4
+    pk_obs <- RESP
+    
+    k20 <- cl/vc
+    k23 <- q/vc
+    k32 <- q/vp
+    
+    d/dt(absorption) = - ka * absorption
+    d/dt(central)    = ka * absorption - k20 * central - k23 * central + k32 * peripheral     # model differential equation
+    d/dt(peripheral) = k23 * central - k32 * peripheral 
+    
+    DV = log(central / vc)       # concentration in plasma
+    DV ~ add(log.err)            # define error model
+  })
+}
+
+pk_covariate_fit <- nlmixr2(covariate_model, 
+               real_world_dataset, 
+               "focei",
+              control=list(print=1), 
+              table=list(cwres=TRUE, npde=TRUE))
+```
+
+# Compare fits between base model and covariate model
+```{r}
+print(base_pk_fit)
+print(pk_covariate_fit)
+
+rbind(base_pk_fit$objDf, pk_covariate_fit$objDf)
+
+# We will convert 
+xpdb_pk_cov <- xpose_data_nlmixr2(pk_covariate_fit,
+                           xp_theme = theme_xp_nlmixr2())
+
+# individual prediction vs individual
+pred_vs_idv(xpdb_pk) # 1st
+pred_vs_idv(xpdb_pk_cov, group="ID") # 2nd
+
+# Individual plots 
+ind_plots(xpdb_pk_cov)
+
+# observation vs individual prediction plot
+dv_vs_pred(xpdb_pk, type="ps")
+dv_vs_pred(xpdb_pk_cov, type="ps")
+
+# Residual error vs population prediction plot
+res_vs_pred(xpdb_pk_cov, res="CWRES", type="ps")
+
+# Residual error vs individual plot
+res_vs_idv(xpdb_pk_cov, res="CWRES", type="ps")
+
+write.csv(pk_covariate_fit, './dataset/pk_final_model_run.csv', row.names = FALSE)
+
+# Residual distribution
+#res_distrib(xpdb_pk_cov, res="CWRES")
+```
+
+### Bonus: BOV Exploration
+```{r, echo = TRUE, warning = FALSE}
+iov_dataset <- read.csv("./dataset/multiple_occasion.csv")
+
+ggplot(iov_dataset[iov_dataset$ID == 1 & iov_dataset$time < 24, ], aes(x = time, y = CP, color = factor(ID))) +
+  geom_line() +
+  geom_point() +
+  #scale_y_log10() +
+  theme_bw() +
+  #facet_wrap(~ID) +
+  theme(legend.position = 'none') +
+  labs(title = 'Individual conc-TIME profile with single dose', x = 'Time (Days)', y = 'Conc (mg/L)')
+
+ggplot(iov_dataset[iov_dataset$ID == 1, ], aes(x = time, y = CP, color = factor(ID))) +
+  geom_line() +
+  geom_point() +
+  theme_bw() +
+  theme(legend.position = 'none') +
+  labs(title = 'Individual conc-TIME profile with multiple dose: Intra-Occasion Variability', x = 'Time (hours)', y = 'Conc (mg/L)')
+```

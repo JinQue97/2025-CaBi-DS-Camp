@@ -1,0 +1,211 @@
+---
+title: "2024 CABI PK/PD Data Analysis Exercise Part.3 - PK/PD relationship and PD model parameter estimation"
+author: "Jin Gyu Kim"
+date: ""
+output: 
+  html_document:
+    css: docs/src/styles/styles.css
+    toc: true
+    number_sections: true
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(comment='.', echo = TRUE, warning = FALSE)
+
+rm(list=ls())
+```
+
+Welcome to PK data analysis exercise template, here we want to demonstrate how coding helps our analysis. 
+Feel free to ask any questions or if you are having trouble running this script
+
+# Install packages 
+If Windows, click [here](https://cran.r-project.org/bin/windows/Rtools/) and download RTools with your R version. Check the console R version, it could be either 4.4.0, or 4.3.X
+
+If mac, click [here](https://mac.r-project.org/tools/) and download GNU Fortran compiler to run this script on mac
+
+# Load Packages
+```{r echo=TRUE}
+library(renv)
+library(tidyverse)
+library(ggplot2)
+library(nlmixr2)
+library(xpose4)
+library(xpose.nlmixr2)
+library(rxode2)
+```
+
+# PK/PD relationship
+```{r warning = FALSE}
+real_world_dataset <- read.csv("./dataset/analyzing_dataset.csv")
+
+# Individual
+ggplot(real_world_dataset[real_world_dataset$ID == 2, ]) +
+  geom_line(data = real_world_dataset[real_world_dataset$ID == 2, ], aes(x = TIME, y = RESP), color = 'red') +
+  geom_line(data = real_world_dataset[real_world_dataset$ID == 2, ], aes(x = TIME, y = DV), color = 'blue') +
+  theme(legend.position = 'none') +
+  scale_y_log10() +
+  theme_bw()
+
+# Population
+ggplot(real_world_dataset[real_world_dataset$ID %in% c(1:12), ]) +
+  geom_line(data = real_world_dataset[real_world_dataset$ID %in% c(1:12), ], aes(x = TIME, y = RESP), color = 'red') +
+  geom_line(data = real_world_dataset[real_world_dataset$ID %in% c(1:12), ], aes(x = TIME, y = DV), color = 'blue') +
+  facet_wrap(~ID) +
+  theme(legend.position = 'none') +
+  scale_y_log10() +
+  theme_bw()
+
+```
+
+Legacy from PK estimation
+```{r}
+# Import PD observation dataset - Individual PK values
+pk_run_fit <- read.csv('./dataset/pk_final_model_run.csv')
+pk_run_fit
+
+ncol(pk_run_fit)
+nrow(pk_run_fit)
+
+# 1 row per 1 ID and then have k20 k23 k32 ka vc
+pk_run_fit_1 <- pk_run_fit %>% select(ID, ka, vc, k20, k23, k32)
+
+pk_run_fit_2 <- pk_run_fit_1[!duplicated(pk_run_fit_1), ]
+
+#xpdb_pk_cov <- xpose_data_nlmixr2(pk_run_fit,
+#                                  xp_theme = theme_xp_nlmixr2())
+
+#prm_distrib(xpdb_pk_cov)
+#eta_distrib(xpdb_pk_cov)
+
+pk_parameter_dataset <- data.frame(pk_run_fit) %>% select(ID, TIME, ka, vc, k20, k23, k32, MIC_C1D4, RESP)
+indiv_pk_values <- pk_parameter_dataset[!duplicated(pk_parameter_dataset$ID), ]
+
+ggplot(indiv_pk_values, aes(x = k20)) +
+  geom_histogram(color = 'white') +
+  theme_bw()
+
+ggplot(indiv_pk_values, aes(x = k23)) +
+  geom_histogram(color = 'white') +
+  theme_bw()
+
+ggplot(indiv_pk_values, aes(x = k32)) +
+  geom_histogram(color = 'white') +
+  theme_bw()
+
+ggplot(indiv_pk_values, aes(x = vc)) +
+  geom_histogram(color = 'white') +
+  theme_bw()
+```
+# PD analysis
+From PK analysis, we obtain individual PK parameters (e.g. k20, k23, k32, etc.) to predict the drug behavior (conc-time) when building a PD model 
+```{r}
+# Add dosing event row
+event_row <- data.frame(ID = 1:100, TIME = 0, ka = NA, vc = NA, k20 = NA, k23 = NA, k32 = NA, MIC_C1D4 = NA, RESP = NA)
+
+# Combine with RESP observation
+pd_run_dataset <- rbind(pk_parameter_dataset, event_row)
+pd_run_dataset <- pd_run_dataset %>% arrange(ID, TIME)
+pd_run_dataset <- pd_run_dataset %>% group_by(ID) %>% fill(ka, vc, k20, k23, k32, MIC_C1D4, RESP, .direction = 'up')
+
+# Clean dataset
+pd_run_dataset <- pd_run_dataset %>% mutate(amt = ifelse(TIME == 0, 60000, 0),
+                                            cmt = ifelse(TIME == 0, 1, 4),
+                                            evid = ifelse(TIME == 0, 1, 0))
+pd_run_dataset <- pd_run_dataset %>% select(ID, amt, TIME, evid, cmt, ka, vc, k20, k23, k32, MIC_C1D4, RESP) %>% ungroup()
+pd_run_dataset <- pd_run_dataset %>% rename(DV = RESP)
+```
+
+## Parameter estimation
+```{r warning = FALSE}
+# We will build a pharmacokinetic model that describe the conc-time dataset
+pd_model <- function() {
+  ini({
+    ## Theta - Initial estimates
+    TVEMAX  <- log(10)
+    TVEC50  <- log(200)
+    TVKOUT  <- log(0.0314)
+    TVHILL  <- log(2)
+    ## Omega  - Initial estimates
+    eta.EMAX ~ 0.1
+    eta.EC50 ~ 0.1
+    eta.KOUT ~ 0.1
+    eta.HILL ~ 0.1
+    ## Sigma - Initial estimates
+    prop.err <- 0.05
+    add.err  <- 0.2
+  })
+  model({
+    Ka      <- ka
+    EMAX    <- exp(TVEMAX + eta.EMAX)   # individual value of clearance
+    EC50    <- exp(TVEC50 + eta.EC50)    # individual value of VC
+    KOUT    <- exp(TVKOUT + eta.KOUT)
+    HILL    <- exp(TVHILL + eta.HILL)
+    
+    ik20    <- k20
+    ik23    <- k23
+    ik32    <- k32
+    
+    MICBL   <- MIC_C1D4
+    Kin     <- KOUT * MICBL
+    
+    RESP(0) =  MICBL
+    
+    d/dt(absorption) = -Ka*absorption
+    d/dt(central)    = Ka*absorption - ik20 * central - ik23*central + ik32*peripheral
+    d/dt(peripheral) = ik23*central - ik32*peripheral 
+    
+    CP = central / vc       # concentration in plasma
+    
+    EFFECT = 1 + EMAX * CP^HILL / (EC50^HILL + CP^HILL)
+    
+    d/dt(RESP)       = Kin*EFFECT - KOUT*RESP
+  
+    RESP ~ prop(prop.err) + add(add.err)    # define error model
+  })
+}
+
+# We incorporate the model with the dataset to obtain pharmacokinetic parameters
+pd_fit <- nlmixr2(pd_model, 
+                  pd_run_dataset, 
+                  "focei",
+                  control=list(print=1), 
+                  table=list(cwres=TRUE, npde=TRUE)
+                  )
+```   
+
+
+## Model Diagnosis
+We visualize the statistical output since seeing the plot is better than just reading the numbers 
+```{r warning = FALSE, echo = FALSE}
+# We will convert 
+xpdb_pd <- xpose_data_nlmixr2(pd_fit,
+                           xp_theme = theme_xp_nlmixr2())
+
+# Individual plots 
+ind_plots(xpdb_pd)
+
+# observation vs population prediction plot
+dv_vs_pred(xpdb_pd, type="ps")
+
+# observation vs individual prediction plot
+dv_vs_ipred(xpdb_pd, type="ps")
+
+# Residual error vs time plot
+res_vs_idv(xpdb_pd, res="CWRES", type="ps")
+
+# individual prediction vs individual
+ipred_vs_idv(xpdb_pd, group="ID")
+
+# Parameter distribution
+#eta_distrib(xpdb_pd)
+
+# Residual distribution
+#res_distrib(xpdb_pd, res="CWRES")
+```
+
+```{r}
+individual_parameters <- pd_fit %>% select(ID, EMAX, EC50, KOUT, HILL, MICBL, k20, k23, k32, vc)
+individual_parameters <- individual_parameters %>% distinct(ID, .keep_all = TRUE)
+
+write.csv(individual_parameters, './dataset/individual_pkpd_param.csv', row.names = FALSE)
+```
+

@@ -1,0 +1,134 @@
+---
+title: "2025 CaBi DS Camp - Understanding basic PK/PD concepts and applying in personalized therapy: TEST"
+author: "Jin Gyu Kim"
+date: "2025-05-30"
+output:
+  html_document:
+    css: docs/src/styles/styles.css
+    toc: true
+    number_sections: true
+---
+
+***
+1. **Install the C Compiler**  
+Ensure that a C compiler is installed on your system. For installation instructions, refer to `ReadMe.txt`.
+
+2. **Activate the R environment**  
+Run the following code chunk to install and activate the R project. When prompted in the console, type Y at install.packages()
+```{r}
+install.packages("renv")
+library(renv)
+renv::activate()
+```
+
+2-1. **Restore packages**
+This step will allow you to sync the packages from renv.lock file
+```{r, echo = TRUE, message = "hide", warning = "hide", results = "hide"}
+renv::restore()
+```
+
+3. **Run Script**
+To knit the `.Rmd` document, press `Ctrl + Shift + K` (Windows) or `Cmd + Shift + K` (Mac) in RStudio. This will generate the output document based on the settings defined in the YAML header. 
+
+4. **Validate the Run**
+`test.html` is an outcome after successful run from `test.Rmd` script. Compare with `test_run_complete.pdf` if anything is missing.
+Compare this file with test_run_complete.pdf to ensure that no content is missing. If any issues are encountered, please contact the author for troubleshooting.
+
+***
+
+**Load Packages**
+```{r echo = TRUE, message = "hide", warning = "hide", results = "hide"}
+rm(list=ls())
+library(tidyverse)
+library(ggplot2)
+library(nlmixr2)
+library(xpose4)
+library(xpose.nlmixr2)
+library(gridExtra)
+library(ggPMX)
+library(ggpubr)
+library(mrgsolve)
+```
+
+**Data Import**
+```{r, warning = "hide"}
+# Import busulfan two compartment dataset
+test_dataset <- read.csv("dataset/analyzing_dataset.csv", na.strings = ".")
+
+# Plasma drug concentration decline in two phases shown in semi-log plot
+ggplot(busulfan_dataset, aes(TIME/60, log(DV), group = ID, color = as.factor(ID))) +
+  geom_line() +
+  theme_bw() +
+  labs(title = "Test semi-log plot", x = "Time (hours)", y = "Conc (mg/L)") +
+  theme(legend.position = "blank")
+```
+
+**Fit**
+```{r, results = "hide"}
+# One compartment model structure
+test_model <- function() {
+  ini({
+    ## Theta - Initial estimates
+    tvka  <- log(0.479)
+    tvcl  <- log(12.1)
+    tvvc  <- log(67.9)
+    tvvp  <- log(515)  
+    tvq   <- log(25)
+    #covWTVC  <- 0.75
+    #covAgeCL <- 0.75
+    ## Omega  - Initial estimates 
+    eta.cl ~ 0.1
+    eta.vc ~ 0.1
+    eta.vp ~ 0.1
+    eta.q  ~ 0.1
+    ## Sigma - Initial estimates
+    log.err <- 0.111 
+    #add.err  <- 0.024   
+  })
+  model({
+    ka <- exp(tvka)
+    cl <- exp(tvcl + eta.cl)
+    vc <- exp(tvvc + eta.vc)
+    vp <- exp(tvvp + eta.vp)
+    q  <- exp(tvq + eta.q)
+    sex <- GENDER 
+    baseline <- MIC_C1D4
+    pk_obs <- RESP
+    
+    k20 <- cl/vc
+    k23 <- q/vc
+    k32 <- q/vp
+    
+    d/dt(absorption) = - ka * absorption
+    d/dt(central)    = ka * absorption - k20 * central - k23 * central + k32 * peripheral        # model differential equation
+    d/dt(peripheral) = k23 * central - k32 * peripheral 
+    
+    DV = log(central / vc)       # concentration in plasma
+    DV ~ add(log.err)            # define error model
+  })
+}
+
+# 1 compartment model fitting
+test_fit <- nlmixr2(
+  test_model,
+  test_dataset,
+  "focei",
+  table = list(cwres = TRUE)
+)
+```
+
+**Plot**
+```{r, warning = "hide"}
+# Convert to XPOSE for goodness of fit
+test_xpdb_pk <- xpose_data_nlmixr2(test_fit,
+                                     xp_theme = theme_xp_nlmixr2()
+                                     )
+
+# observation vs population prediction plot
+dv_vs_pred(test_xpdb_pk,
+           type="pls",
+           title = "Test",
+           log   = 'xy',
+           subtitle = NULL,
+           guide = TRUE)
+```

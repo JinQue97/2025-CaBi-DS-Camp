@@ -1,0 +1,164 @@
+---
+title: "2024 CABI PK/PD Data Analysis Exercise Part.4 - Simulation Run and Precision dosing"
+author: "Jin Gyu Kim"
+date: ""
+output: 
+  html_document:
+    css: docs/src/styles/styles.css
+    toc: true
+    number_sections: true
+---
+```{r setup, include=FALSE}
+rm(list=ls())
+```
+
+Welcome to PK/PD data analysis exercise template, here we want to demonstrate how coding helps our analysis. 
+Feel free to ask any questions or if you are having trouble running this script
+
+# Install packages 
+If Windows, click [here](https://cran.r-project.org/bin/windows/Rtools/) and download RTools with your R version. Check the console R version, it could be either 4.4.0, or 4.3.X
+
+If mac, click [here](https://mac.r-project.org/tools/) and download GNU Fortran compiler to run this script on mac
+
+# Load Packages
+Here we want to import our installed package into our R environment
+```{r echo=TRUE}
+#install.packages("renv")
+library(renv)
+#renv::init()
+
+library(tidyverse)
+library(ggplot2)
+library(nlmixr2)
+library(xpose.nlmixr2)
+library(rxode2)
+library(mrgsolve)
+```
+
+Read and clean data for simulation 
+```{r pressure, echo=TRUE}
+# Import data
+patient_dataset <- read.csv("./dataset/individual_pkpd_param.csv")
+mod <- mread("model/simulation_model.mod")
+```
+
+```{r}
+e <- ev(ID = 1:100, amt = 60000, time = seq(0, 24*30, by = 24))
+individual_sim_dataset <- merge(patient_dataset, e, by = 'ID')
+
+set.seed(100)
+sim <- mod %>% ev(individual_sim_dataset) %>% mrgsim_df(tgrid = tgrid(0, 720, delta = 1), carry_out = c('k20', 'k23', 'k32', 'MICBL', 'vc'))
+```
+
+```{r}
+# PK simulation
+ggplot(sim[sim$ID %in% c(1:12) & sim$time < 24,  ], aes(x = time/24, y = DV_PK, group = ID, color = as.character(ID))) +
+  geom_line() +
+  theme_bw() +
+  theme(legend.position = 'none') +
+  labs(x = 'Time (Days)', y = 'Conc (mg/L)')
+
+ggplot(sim[sim$ID %in% c(1:12), ], aes(x = time/24, y = DV_PK, group = ID, color = as.character(ID))) +
+  geom_line() +
+  theme_bw() +
+  theme(legend.position = 'none') +
+  labs(x = 'Time (Days)', y = 'Conc (mg/L)')
+
+ggplot(sim[sim$ID %in% c(1:12) & sim$time < 24,  ], aes(x = time/24, y = DV_RESP, group = ID, color = as.character(ID))) +
+  geom_line() +
+  theme_bw() +
+  theme(legend.position = 'none') +
+  labs(x = 'Time (Days)', y = 'Conc (mg/L)')
+
+ggplot(sim[sim$ID %in% c(1:12),  ], aes(x = time/24, y = DV_RESP, group = ID, color = as.character(ID))) +
+  geom_line() +
+  theme_bw() +
+  theme(legend.position = 'none')+
+  labs(x = 'Time (Days)', y = 'Conc (mg/L)')
+  
+ggplot() +
+  geom_line(data = sim[sim$ID %in% c(1:12) & sim$time < 24, ], aes(x = time, y = DV_PK, group = ID), color = 'red') +
+  geom_line(data = sim[sim$ID %in% c(1:12) & sim$time < 24, ], aes(x = time, y = DV_RESP, group = ID), color = 'blue') +
+  theme_bw() +
+  facet_wrap(~ID) +
+  labs(x = 'Time (Days)', y = 'Conc (mg/L)')
+
+ggplot() +
+  geom_line(data = sim[sim$ID %in% c(1:12), ], aes(x = time, y = DV_RESP, group = ID), color = 'blue') +
+  geom_line(data = sim[sim$ID %in% c(1:12), ], aes(x = time, y = DV_PK, group = ID), color = 'red') +
+  theme_bw() +
+  facet_wrap(~ID) +
+  labs(x = 'Time (Days)', y = 'Conc (mg/L)')
+```
+
+# Set the therapeutic range from 100 - 200 mg/L
+```{r}
+ggplot(data = sim[sim$ID %in% c(50:62), ], aes(x = time/24, y = DV_RESP, group = ID, color = as.character(ID))) +
+  geom_line(alpha = 0.5) +
+  annotate('text', x = 27, y = 90, label = 'Below therapeutic range', color = 'blue') +
+  geom_hline(yintercept = 100, alpha = 1, color = 'blue') +
+  geom_hline(yintercept = 200, alpha = 1, color = 'red') +
+  annotate('text', x = 27, y = 210, label = 'Toxicity threshold', color = 'red') +
+  annotate('rect', xmin = 0, xmax = 30, ymin = 100, ymax = 200, label = 'Therapeutic range', fill = 'yellow', alpha = 0.5) +
+  annotate('text', x = 27, y = 150, label = 'Therapeutic range', color = 'purple') +
+  theme_bw() +
+  theme(legend.position = 'none') +
+  labs(title = '30 day simulation with 10 individuals', x = 'Time (Days)', y = 'Conc (mg/L)')
+
+ggplot(data = sim[sim$ID %in% c(50:62), ], aes(x = time/24, y = DV_RESP, group = ID, color = as.character(ID))) +
+  geom_line(alpha = 1) +
+  geom_hline(yintercept = 100, alpha = 1, color = 'blue') +
+  geom_hline(yintercept = 200, alpha = 1, color = 'red') +
+  annotate('rect', xmin = 0, xmax = 30, ymin = 100, ymax = 200, label = 'Therapeutic range', fill = 'yellow', alpha = 0.5) +
+  theme_bw() +
+  theme(legend.position = 'none') +
+  facet_wrap(~ID)
+
+```
+
+# Adjust the dosing for individuals
+```{r}
+# 50, 57, 58, 61 - Reduce dose
+reduce_dose <- patient_dataset %>% filter(ID %in% c(50, 57, 58, 61))
+e1 <- ev(ID = c(50, 57, 58, 61), amt = 30000, time = seq(0, 24*30, by = 24))
+reduced_patients <- merge(reduce_dose, e1, by = 'ID')
+
+sim_50_57_58_61 <- mod %>% ev(reduced_patients) %>% mrgsim_df(tgrid = tgrid(0, 720, delta = 1), carry_out = c('k20', 'k23', 'k32', 'MICBL', 'vc'))
+
+ggplot(sim_50_57_58_61, aes(x = time/24, y = RESP, group = factor(ID), color = factor(ID))) +
+  geom_line(alpha = 0.5) +
+  #annotate('text', x = 27, y = 90, label = 'Below therapeutic range', color = 'blue') +
+  geom_hline(yintercept = 100, alpha = 1, color = 'blue') +
+  #annotate('text', x = 27, y = 150, label = 'Therapeutic range') +
+  geom_hline(yintercept = 200, alpha = 1, color = 'red') +
+  #annotate('text', x = 27, y = 210, label = 'Toxicity threshold', color = 'red') +
+  annotate('rect', xmin = 0, xmax = 30, ymin = 100, ymax = 200, label = 'Therapeutic range', fill = 'yellow', alpha = 0.5) +
+  theme_bw() +
+  theme(legend.position = 'none') +
+  facet_wrap(~ID) +
+  labs(title = '30 day simulation with 50, 57, 58, 61', x = 'Time (Days)', y = 'Conc (mg/L)')
+  
+# 52, 55, 59 - Increase
+increase_dose <- patient_dataset %>% filter(ID %in% c(52, 55, 59))
+e2 <- ev(ID = c(52, 55, 59), amt = 120000, time = seq(0, 6*120, by = 24))
+increased_patients <- merge(increase_dose, e2, by = 'ID')
+
+sim_52_55_59 <- mod %>% ev(increased_patients) %>% mrgsim_df(tgrid = tgrid(0, 720, delta = 1), carry_out = c('k20', 'k23', 'k32', 'MICBL', 'vc'))
+
+ggplot(sim_52_55_59, aes(x = time/24, y = RESP, group = factor(ID), color = factor(ID))) +
+  geom_line(alpha = 0.5) +
+  #annotate('text', x = 27, y = 90, label = 'Below therapeutic range', color = 'blue') +
+  geom_hline(yintercept = 100, alpha = 1, color = 'blue') +
+  #annotate('text', x = 27, y = 150, label = 'Therapeutic range') +
+  geom_hline(yintercept = 200, alpha = 1, color = 'red') +
+  #annotate('text', x = 27, y = 210, label = 'Toxicity threshold', color = 'red') +
+  annotate('rect', xmin = 0, xmax = 30, ymin = 100, ymax = 200, label = 'Therapeutic range', fill = 'yellow', alpha = 0.5) +
+  theme_bw() +
+  theme(legend.position = 'none') +
+  facet_wrap(~ID) +
+  labs(title = '30 day simulation with 52, 55, 59', x = 'Time (Days)', y = 'Conc (mg/L)')
+```
+
+# Using Interactive Tool
+Click [here](bimvptest.shinyapps.io/precision_dosing/) for running interactive tool = 
+
